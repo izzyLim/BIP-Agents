@@ -104,5 +104,17 @@ if __name__ == "__main__":
     result = asyncio.run(run_morning_pulse(sample_market_data, sample_news))
     print("\n=== 최종 리포트 ===")
     print(result["final_report"])
+
     print("\n=== 토큰 사용량 ===")
-    print(json.dumps(result["token_usage"], indent=2))
+    usage = result["token_usage"]
+    total_in = total_out = 0
+    for agent, t in usage.items():
+        if isinstance(t, dict):
+            print(f"  {agent:12s}: input={t.get('input',0):>6,} / output={t.get('output',0):>5,}")
+            total_in  += t.get("input", 0)
+            total_out += t.get("output", 0)
+    print(f"  {'합계':12s}: input={total_in:>6,} / output={total_out:>5,} / total={total_in+total_out:,}")
+
+    print(f"\n품질 검증: {'✅ PASS' if result['quality_passed'] else '❌ FAIL'}")
+    if result.get("errors"):
+        print(f"오류: {result['errors']}")

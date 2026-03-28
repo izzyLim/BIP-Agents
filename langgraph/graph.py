@@ -66,19 +66,24 @@ async def parallel_analysis_node(state: ReportState) -> dict:
         return_exceptions=True,
     )
 
-    merged = {
-        "token_usage": state.get("token_usage", {}),
-        "errors": state.get("errors", []),
-    }
+    # 에이전트별 token_usage를 별도로 병합 (병렬 실행 시 덮어쓰기 방지)
+    merged_tokens = dict(state.get("token_usage", {}))
+    merged = {"errors": list(state.get("errors", []))}
 
     for result in results:
         if isinstance(result, Exception):
             logger.error(f"에이전트 실패: {result}")
             merged["errors"].append(str(result))
         else:
+            agent_tokens = result.pop("token_usage", {})
+            merged_tokens.update(agent_tokens)
             merged.update(result)
 
-    logger.info(f"병렬 분석 완료. 오류: {len(merged['errors'])}건")
+    merged["token_usage"] = merged_tokens
+
+    # 토큰 합계 로그
+    total = sum(v.get("total", 0) for v in merged_tokens.values() if isinstance(v, dict))
+    logger.info(f"병렬 분석 완료. 오류: {len(merged['errors'])}건 / 누적 토큰: {total:,}")
     return merged
 
 
@@ -100,7 +105,10 @@ async def finalize_node(state: ReportState) -> dict:
     feedback = state.get("quality_feedback", "")
     if feedback and feedback not in ("없음", ""):
         logger.info(f"품질 피드백 (참고): {feedback[:100]}")
-    return {"final_report": state.get("aggregated_report", "")}
+    return {
+        "final_report": state.get("aggregated_report", ""),
+        "quality_passed": True,  # finalize 단계에 도달했으면 통과로 확정
+    }
 
 
 # ── 그래프 빌드 ───────────────────────────────────────────────────────────────

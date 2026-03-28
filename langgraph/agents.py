@@ -8,9 +8,10 @@ Morning Pulse 에이전트 정의
 - quality_checker: 품질 검증 (Haiku)
 """
 
+import json
 import os
 import logging
-from typing import Any
+from typing import Any, Dict
 from langchain_anthropic import ChatAnthropic
 from langgraph.prebuilt import create_react_agent
 
@@ -18,9 +19,8 @@ from state import ReportState
 
 logger = logging.getLogger(__name__)
 
-# ── 모델 설정 ──────────────────────────────────────────────────────────────────
 SONNET = "claude-sonnet-4-6"
-HAIKU = "claude-haiku-4-5-20251001"
+HAIKU  = "claude-haiku-4-5-20251001"
 
 
 def _llm(model: str, max_tokens: int = 4096) -> ChatAnthropic:
@@ -29,6 +29,20 @@ def _llm(model: str, max_tokens: int = 4096) -> ChatAnthropic:
         max_tokens=max_tokens,
         api_key=os.getenv("ANTHROPIC_API_KEY"),
     )
+
+
+def _extract_tokens(response) -> Dict[str, int]:
+    """LangChain ChatAnthropic 응답에서 토큰 수 추출"""
+    usage = getattr(response, "usage_metadata", None) or {}
+    return {
+        "input":  usage.get("input_tokens", 0),
+        "output": usage.get("output_tokens", 0),
+        "total":  usage.get("total_tokens", 0),
+    }
+
+
+def _log_tokens(agent: str, tokens: Dict[str, int]):
+    logger.info(f"💰 [{agent}] input={tokens['input']:,} / output={tokens['output']:,} tokens")
 
 
 # ── 글로벌 시장 에이전트 ───────────────────────────────────────────────────────
@@ -48,31 +62,32 @@ async def global_agent_node(state: ReportState) -> dict:
     llm = _llm(SONNET)
     market_data = state["market_data"]
 
-    # 글로벌 데이터만 추출
     global_data = {
         "indices": market_data.get("indices", {}),
         "exchange_rates": market_data.get("exchange_rates", {}),
         "interest_rates": market_data.get("interest_rates", {}),
         "macro": {k: v for k, v in market_data.get("macro", {}).items()
                   if k in ["vix", "dxy", "wti", "gold"]},
-        "news": state.get("news_data", "")[:2000],  # 글로벌 관련 뉴스만
+        "news": state.get("news_data", "")[:2000],
     }
 
-    import json
     prompt = f"{GLOBAL_PROMPT}\n\n=== 시장 데이터 ===\n{json.dumps(global_data, ensure_ascii=False, indent=2)}"
 
     try:
         response = await llm.ainvoke(prompt)
+        tokens = _extract_tokens(response)
+        _log_tokens("global", tokens)
         return {
             "global_analysis": response.content,
-            "token_usage": {
-                **state.get("token_usage", {}),
-                "global": getattr(response, "usage_metadata", {}).get("total_tokens", 0),
-            },
+            "token_usage": {"global": tokens},
         }
     except Exception as e:
         logger.error(f"global_agent 실패: {e}")
-        return {"global_analysis": f"[ERROR] {e}", "errors": state.get("errors", []) + [str(e)]}
+        return {
+            "global_analysis": f"[ERROR] {e}",
+            "token_usage": {"global": {"input": 0, "output": 0, "total": 0}},
+            "errors": state.get("errors", []) + [str(e)],
+        }
 
 
 # ── 한국 시장 에이전트 ─────────────────────────────────────────────────────────
@@ -102,14 +117,20 @@ async def korea_agent_node(state: ReportState, mcp_tools: list = None) -> dict:
         "news": state.get("news_data", "")[:2000],
     }
 
-    import json
     prompt = f"{KOREA_PROMPT}\n\n=== 시장 데이터 ===\n{json.dumps(korea_data, ensure_ascii=False, indent=2)}"
+
+    total_input = total_output = 0
 
     if tools:
         agent = create_react_agent(llm, tools)
         try:
             result = await agent.ainvoke({"messages": [{"role": "user", "content": prompt}]})
             content = result["messages"][-1].content
+            # ReAct: 메시지별 토큰 합산
+            for msg in result["messages"]:
+                u = getattr(msg, "usage_metadata", None) or {}
+                total_input  += u.get("input_tokens", 0)
+                total_output += u.get("output_tokens", 0)
         except Exception as e:
             logger.error(f"korea_agent (ReAct) 실패: {e}")
             content = f"[ERROR] {e}"
@@ -117,14 +138,15 @@ async def korea_agent_node(state: ReportState, mcp_tools: list = None) -> dict:
         try:
             response = await llm.ainvoke(prompt)
             content = response.content
+            tokens = _extract_tokens(response)
+            total_input, total_output = tokens["input"], tokens["output"]
         except Exception as e:
             logger.error(f"korea_agent 실패: {e}")
             content = f"[ERROR] {e}"
 
-    return {
-        "korea_analysis": content,
-        "token_usage": {**state.get("token_usage", {})},
-    }
+    tokens = {"input": total_input, "output": total_output, "total": total_input + total_output}
+    _log_tokens("korea", tokens)
+    return {"korea_analysis": content, "token_usage": {"korea": tokens}}
 
 
 # ── 반도체 에이전트 ────────────────────────────────────────────────────────────
@@ -153,24 +175,33 @@ async def semi_agent_node(state: ReportState, mcp_tools: list = None) -> dict:
         "news": state.get("news_data", "")[:1500],
     }
 
-    import json
     prompt = f"{SEMI_PROMPT}\n\n=== 데이터 ===\n{json.dumps(semi_data, ensure_ascii=False, indent=2)}"
+
+    total_input = total_output = 0
 
     if tools:
         agent = create_react_agent(llm, tools)
         try:
             result = await agent.ainvoke({"messages": [{"role": "user", "content": prompt}]})
             content = result["messages"][-1].content
+            for msg in result["messages"]:
+                u = getattr(msg, "usage_metadata", None) or {}
+                total_input  += u.get("input_tokens", 0)
+                total_output += u.get("output_tokens", 0)
         except Exception as e:
             content = f"[ERROR] {e}"
     else:
         try:
             response = await llm.ainvoke(prompt)
             content = response.content
+            tokens = _extract_tokens(response)
+            total_input, total_output = tokens["input"], tokens["output"]
         except Exception as e:
             content = f"[ERROR] {e}"
 
-    return {"semi_analysis": content, "token_usage": {**state.get("token_usage", {})}}
+    tokens = {"input": total_input, "output": total_output, "total": total_input + total_output}
+    _log_tokens("semi", tokens)
+    return {"semi_analysis": content, "token_usage": {"semi": tokens}}
 
 
 # ── 수급 에이전트 ──────────────────────────────────────────────────────────────
@@ -185,7 +216,7 @@ FLOW_PROMPT = """당신은 투자자 수급 분석 전문가입니다.
 """
 
 async def flow_agent_node(state: ReportState) -> dict:
-    """수급 분석 에이전트 (Haiku — 비용 효율)"""
+    """수급 분석 에이전트 (Haiku)"""
     llm = _llm(HAIKU, max_tokens=2048)
     market_data = state["market_data"]
 
@@ -194,14 +225,18 @@ async def flow_agent_node(state: ReportState) -> dict:
         "program_trading": market_data.get("program_trading", {}),
     }
 
-    import json
     prompt = f"{FLOW_PROMPT}\n\n=== 수급 데이터 ===\n{json.dumps(flow_data, ensure_ascii=False, indent=2)}"
 
     try:
         response = await llm.ainvoke(prompt)
-        return {"flow_analysis": response.content}
+        tokens = _extract_tokens(response)
+        _log_tokens("flow", tokens)
+        return {"flow_analysis": response.content, "token_usage": {"flow": tokens}}
     except Exception as e:
-        return {"flow_analysis": f"[ERROR] {e}"}
+        return {
+            "flow_analysis": f"[ERROR] {e}",
+            "token_usage": {"flow": {"input": 0, "output": 0, "total": 0}},
+        }
 
 
 # ── 집계 에이전트 ──────────────────────────────────────────────────────────────
@@ -248,31 +283,47 @@ async def aggregator_node(state: ReportState) -> dict:
         "수급 분석": state.get("flow_analysis", ""),
     }
 
-    import json
+    # 품질 피드백이 있으면 재작성 지시로 포함
+    feedback = state.get("quality_feedback", "")
+    feedback_section = f"\n\n=== 품질 검증 피드백 (반드시 반영) ===\n{feedback}" if feedback else ""
+
     analyses = "\n\n".join([f"=== {k} ===\n{v}" for k, v in sections.items() if v])
-    prompt = f"{AGGREGATOR_PROMPT}\n\n{analyses}"
+    prompt = f"{AGGREGATOR_PROMPT}\n\n{analyses}{feedback_section}"
 
     try:
         response = await llm.ainvoke(prompt)
-        return {"aggregated_report": response.content}
+        tokens = _extract_tokens(response)
+        _log_tokens("aggregator", tokens)
+        existing = state.get("token_usage", {})
+        return {
+            "aggregated_report": response.content,
+            "token_usage": {**existing, "aggregator": tokens},
+        }
     except Exception as e:
         return {"aggregated_report": f"[ERROR] {e}"}
 
 
 # ── 품질 검증 에이전트 ─────────────────────────────────────────────────────────
-QUALITY_PROMPT = """당신은 금융 리포트 품질 검증자입니다.
-다음 Morning Pulse 리포트를 검토하고 품질을 평가하세요.
+QUALITY_PROMPT = """당신은 Morning Pulse 리포트 품질 검증자입니다.
+아래 리포트와 원본 시장 데이터를 비교하여 품질을 평가하세요.
 
-검증 항목:
-1. 수치 일관성 — 본문의 수치가 데이터와 일치하는가
-2. 할루시네이션 — 데이터에 없는 정보를 지어낸 부분이 있는가
-3. 신호등 일관성 — 🟢/🟡/🔴 판단이 데이터와 맞는가
-4. 체크리스트 완성도 — 실질적이고 구체적인 항목인가
-5. 형식 준수 — 필수 섹션(핵심/전망/체크리스트/시나리오)이 모두 있는가
+검증 항목 (각 항목은 독립적으로 평가):
+1. **형식 준수** — 필수 섹션 5개가 모두 있는가
+   (📌오늘의핵심 / 🌐글로벌 / 🇰🇷한국 / ✅체크리스트 / ⚡시나리오)
+2. **수치 일관성** — 리포트 본문의 수치가 원본 시장 데이터와 크게 다르지 않은가
+   (MCP로 추가 조회한 최신 정보는 원본 데이터에 없어도 PASS)
+3. **체크리스트 품질** — 항목이 3개 이상이고 구체적인가 (막연한 "모니터링" 금지)
+4. **시나리오 완성도** — 상승/하락 시나리오 모두 있고 구체적 조건이 명시되었는가
+5. **신호등 존재** — 각 섹션에 🟢/🟡/🔴 중 하나 이상 있는가
 
-응답 형식:
-PASS 또는 FAIL
-피드백: [구체적인 수정 필요 사항, 없으면 "없음"]
+판정 기준:
+- 5개 항목 중 4개 이상 통과 → PASS
+- 3개 이하 통과 → FAIL (구체적 수정 사항 명시)
+
+⚠️ 응답 규칙 (반드시 준수):
+- 첫 번째 단어는 반드시 PASS 또는 FAIL 중 하나만 출력
+- 그 외 다른 텍스트, 마크다운 헤더, 설명을 첫 줄에 쓰지 말 것
+- 형식: PASS\n피드백: 없음  또는  FAIL\n피드백: [수정 사항]
 """
 
 async def quality_checker_node(state: ReportState) -> dict:
@@ -283,23 +334,48 @@ async def quality_checker_node(state: ReportState) -> dict:
     if not report or report.startswith("[ERROR]"):
         return {"quality_passed": False, "quality_feedback": "리포트 생성 실패"}
 
-    prompt = f"{QUALITY_PROMPT}\n\n=== 리포트 ===\n{report}"
+    # 강제 통과 조건: 최대 재시도 초과
+    if state.get("retry_count", 0) >= 2:
+        logger.warning("최대 재시도 도달 — 강제 통과")
+        return {"quality_passed": True, "quality_feedback": "최대 재시도 도달 — 강제 통과"}
+
+    # market_data 핵심 수치만 요약해서 전달 (토큰 절약)
+    market_data = state.get("market_data", {})
+    data_summary = {
+        "indices":   {k: v.get("value") for k, v in market_data.get("indices", {}).items()},
+        "usd_krw":   market_data.get("exchange_rates", {}).get("usd_krw", {}).get("value"),
+        "vix":       market_data.get("macro", {}).get("vix", {}).get("value"),
+        "investor_flow": {k: v.get("net") for k, v in market_data.get("investor_flow", {}).items()},
+    }
+
+    prompt = (
+        f"{QUALITY_PROMPT}\n\n"
+        f"=== 원본 시장 데이터 (핵심 수치) ===\n{json.dumps(data_summary, ensure_ascii=False, indent=2)}\n\n"
+        f"=== 리포트 ===\n{report}"
+    )
 
     try:
         response = await llm.ainvoke(prompt)
+        tokens = _extract_tokens(response)
+        _log_tokens("quality", tokens)
+
         content = response.content
-        passed = content.strip().upper().startswith("PASS")
+        # "PASS" 판정: 첫 줄 또는 "판정:" 뒤에 PASS가 있으면 통과
+        first_lines = content[:300].upper()
+        passed = (
+            first_lines.strip().startswith("PASS")
+            or "판정: PASS" in content
+            or "판정:PASS" in content
+            or "\nPASS" in first_lines
+        )
         feedback = content.split("피드백:")[-1].strip() if "피드백:" in content else content
 
-        if state.get("retry_count", 0) >= 2:
-            # 최대 재시도 후 강제 통과
-            passed = True
-            feedback = "최대 재시도 도달 — 강제 통과"
-
+        existing = state.get("token_usage", {})
         return {
             "quality_passed": passed,
             "quality_feedback": feedback,
             "retry_count": state.get("retry_count", 0) + (0 if passed else 1),
+            "token_usage": {**existing, "quality": tokens},
         }
     except Exception as e:
         return {"quality_passed": True, "quality_feedback": f"검증 오류 (통과 처리): {e}"}
