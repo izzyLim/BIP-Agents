@@ -103,15 +103,39 @@ async def get_financial_statement(
 
 async def get_corp_code(corp_name: str) -> list:
     """
-    기업명으로 DART 기업 고유번호 검색
+    기업명으로 DART 기업 고유번호 검색.
+    DART corpCode.xml (전체 기업 목록) 다운로드 후 이름으로 필터링.
 
     Args:
-        corp_name: 기업명 (부분 일치)
+        corp_name: 기업명 (부분 일치, 예: 삼성전자, SK하이닉스)
     """
-    params = {"crtfc_key": _api_key(), "corp_name": corp_name, "page_no": 1, "page_count": 10}
+    import zipfile
+    import io
+    import xml.etree.ElementTree as ET
 
-    async with httpx.AsyncClient(timeout=15) as client:
-        resp = await client.get(f"{DART_BASE}/company.json", params=params)
+    params = {"crtfc_key": _api_key()}
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.get(f"{DART_BASE}/corpCode.xml", params=params)
         resp.raise_for_status()
-        data = resp.json()
-        return data.get("list", [])
+
+    # ZIP 압축 해제 → XML 파싱
+    zf = zipfile.ZipFile(io.BytesIO(resp.content))
+    xml_data = zf.read(zf.namelist()[0])
+    root = ET.fromstring(xml_data)
+
+    results = []
+    for item in root.findall("list"):
+        name = item.findtext("corp_name", "")
+        stock_code = item.findtext("stock_code", "").strip()
+        if corp_name.lower() in name.lower() and stock_code:  # 상장사만
+            results.append({
+                "corp_code": item.findtext("corp_code", ""),
+                "corp_name": name,
+                "stock_code": stock_code,
+                "modify_date": item.findtext("modify_date", ""),
+            })
+        if len(results) >= 10:
+            break
+
+    return results

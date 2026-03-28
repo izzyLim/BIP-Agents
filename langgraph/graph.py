@@ -35,15 +35,15 @@ async def load_mcp_tools() -> list:
         return []
 
     try:
-        async with MultiServerMCPClient({
+        client = MultiServerMCPClient({
             "bip-stock": {
                 "url": MCP_SERVER_URL,
                 "transport": "sse",
             }
-        }) as client:
-            tools = client.get_tools()
-            logger.info(f"MCP 도구 로드 완료: {[t.name for t in tools]}")
-            return tools
+        })
+        tools = await client.get_tools()
+        logger.info(f"MCP 도구 로드 완료: {[t.name for t in tools]}")
+        return tools
     except Exception as e:
         logger.warning(f"MCP 서버 연결 실패 ({MCP_SERVER_URL}) — MCP 없이 실행: {e}")
         return []
