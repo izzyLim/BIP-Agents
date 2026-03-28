@@ -16,5 +16,5 @@ COPY . .
 ENV MCP_SERVER_URL=http://bip-stock-mcp:8000/sse
 ENV USE_MCP=true
 
-# 기본 실행: 테스트 (실제 실행은 Airflow 또는 docker compose run)
-CMD ["uv", "run", "python", "main.py"]
+ENTRYPOINT ["uv", "run"]
+CMD ["python", "main.py"]
