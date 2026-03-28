@@ -1,0 +1,13 @@
+[project]
+name = "bip-stock-mcp"
+version = "0.1.0"
+description = "BIP 주식/금융 데이터 MCP 서버 (DART, KRX, 뉴스)"
+requires-python = ">=3.10"
+dependencies = [
+    "fastmcp>=3.1.1",
+    "httpx>=0.28.1",
+    "python-dotenv>=1.2.2",
+]
+
+[project.scripts]
+bip-stock-mcp = "server:mcp.run"

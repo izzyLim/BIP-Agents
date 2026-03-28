@@ -1,0 +1,4 @@
+langgraph/.venv/
+mcp-servers/bip-stock-mcp/.venv/
+*.pyc
+__pycache__/
