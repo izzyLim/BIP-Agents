@@ -194,4 +194,16 @@ async def news_search_web(query: str, num_results: int = 5) -> list:
 
 
 if __name__ == "__main__":
-    mcp.run()
+    import sys
+
+    # Docker 환경에서는 SSE 모드로 실행 (HTTP 서버)
+    # 로컬/Claude Desktop에서는 stdio 모드
+    transport = os.getenv("MCP_TRANSPORT", "stdio")
+    host = os.getenv("MCP_HOST", "0.0.0.0")
+    port = int(os.getenv("MCP_PORT", "8000"))
+
+    if transport == "sse":
+        logger.info(f"FastMCP SSE 서버 시작: http://{host}:{port}/sse")
+        mcp.run(transport="sse", host=host, port=port)
+    else:
+        mcp.run(transport="stdio")

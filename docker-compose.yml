@@ -1,0 +1,55 @@
+services:
+
+  # ── MCP 서버 (상시 실행) ──────────────────────────────────────────────────
+  bip-stock-mcp:
+    build:
+      context: ./mcp-servers/bip-stock-mcp
+      dockerfile: Dockerfile
+    container_name: bip-stock-mcp
+    env_file:
+      - .env
+    environment:
+      MCP_TRANSPORT: sse
+      MCP_HOST: 0.0.0.0
+      MCP_PORT: "8000"
+    ports:
+      - "8000:8000"        # 로컬 디버깅용 (외부 노출)
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    networks:
+      - bip-agents-network
+      - stock-network        # Airflow 워커도 이 서비스를 호출할 수 있도록
+
+  # ── LangGraph 에이전트 (단독 실행 / 테스트용) ──────────────────────────────
+  # 평소에는 실행 안 함. 아래 명령으로 필요할 때 실행:
+  #   docker compose run --rm langgraph python main.py
+  langgraph:
+    build:
+      context: ./langgraph
+      dockerfile: Dockerfile
+    container_name: bip-langgraph
+    env_file:
+      - .env
+    environment:
+      MCP_SERVER_URL: http://bip-stock-mcp:8000/sse
+      USE_MCP: "true"
+    depends_on:
+      bip-stock-mcp:
+        condition: service_healthy
+    networks:
+      - bip-agents-network
+    profiles:
+      - run          # 기본 up에서는 실행 안 됨
+
+networks:
+  bip-agents-network:
+    driver: bridge
+
+  stock-network:
+    external: true   # Airflow docker-compose에서 만든 네트워크 공유
+    name: stock-network
