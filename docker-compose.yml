@@ -12,6 +12,11 @@ services:
       MCP_TRANSPORT: sse
       MCP_HOST: 0.0.0.0
       MCP_PORT: "8000"
+      PG_HOST: ${PG_HOST:-bip-postgres}
+      PG_PORT: ${PG_PORT:-5432}
+      PG_USER: ${PG_USER:-user}
+      PG_PASSWORD: ${PG_PASSWORD:-pw1234}
+      PG_DB: ${PG_DB:-stockdb}
     ports:
       - "8001:8000"        # 로컬 디버깅용 (외부 노출, 8000 충돌 방지)
     restart: unless-stopped
@@ -28,6 +33,36 @@ services:
   # ── LangGraph 에이전트 (단독 실행 / 테스트용) ──────────────────────────────
   # 평소에는 실행 안 함. 아래 명령으로 필요할 때 실행:
   #   docker compose run --rm langgraph python main.py
+  # ── 에이전트 API 서버 (상시 실행) ──────────────────────────────────────────
+  bip-agents-api:
+    build:
+      context: ./langgraph
+      dockerfile: Dockerfile
+    container_name: bip-agents-api
+    env_file:
+      - .env
+    environment:
+      MCP_SERVER_URL: http://bip-stock-mcp:8000/sse
+      USE_MCP: "true"
+      API_PORT: "8100"
+    command: ["uv", "run", "python", "api.py"]
+    ports:
+      - "8100:8100"
+    depends_on:
+      bip-stock-mcp:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c \"import socket; s=socket.socket(); s.settimeout(2); r=s.connect_ex(('localhost',8100)); s.close(); exit(r)\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    networks:
+      - bip-agents-network
+      - stock-network
+
+  # ── LangGraph 에이전트 (단독 실행 / 테스트용) ──────────────────────────────
   langgraph:
     build:
       context: ./langgraph

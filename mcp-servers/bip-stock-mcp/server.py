@@ -12,6 +12,13 @@ from fastmcp import FastMCP
 from dart import get_disclosure_list, get_disclosure, get_financial_statement, get_corp_code
 from krx import get_stock_trade_info, get_stock_base_info, get_market_index
 from news import search_naver_news, search_web
+from db import fetch_investor_flow, fetch_investor_trading, fetch_semiconductor_prices, fetch_market_indices
+from realtime import (
+    get_realtime_stock_price, get_realtime_index, get_realtime_investor,
+    get_realtime_program_trade, get_realtime_fx,
+    get_night_futures, get_crypto_price, get_sector_performance,
+    get_global_index,
+)
 
 load_dotenv()
 
@@ -51,6 +58,7 @@ async def dart_disclosure_list(
     Returns:
         공시 목록 (접수번호, 기업명, 보고서명, 접수일시 등)
     """
+    logger.info(f"[TOOL] dart_disclosure_list | corp_code={corp_code} bgn_de={bgn_de} end_de={end_de} page_count={page_count}")
     return await get_disclosure_list(
         corp_code=corp_code,
         bgn_de=bgn_de,
@@ -71,6 +79,7 @@ async def dart_disclosure(rcept_no: str) -> dict:
     Returns:
         공시 문서 목록 및 URL
     """
+    logger.info(f"[TOOL] dart_disclosure | rcept_no={rcept_no}")
     return await get_disclosure(rcept_no)
 
 
@@ -93,6 +102,7 @@ async def dart_financial_statement(
     Returns:
         재무제표 항목별 금액
     """
+    logger.info(f"[TOOL] dart_financial_statement | corp_code={corp_code} bsns_year={bsns_year} reprt_code={reprt_code}")
     return await get_financial_statement(corp_code, bsns_year, reprt_code, fs_div)
 
 
@@ -107,6 +117,7 @@ async def dart_corp_search(corp_name: str) -> list:
     Returns:
         기업 목록 (corp_code, corp_name, stock_code 등)
     """
+    logger.info(f"[TOOL] dart_corp_search | corp_name={corp_name}")
     return await get_corp_code(corp_name)
 
 
@@ -124,6 +135,7 @@ async def krx_stock_trade_info(ticker: str, date: Optional[str] = None) -> dict:
     Returns:
         종목 일별 시세 정보
     """
+    logger.info(f"[TOOL] krx_stock_trade_info | ticker={ticker} date={date}")
     return await get_stock_trade_info(ticker, date)
 
 
@@ -138,6 +150,7 @@ async def krx_stock_base_info(ticker: str) -> dict:
     Returns:
         종목 기본 정보
     """
+    logger.info(f"[TOOL] krx_stock_base_info | ticker={ticker}")
     return await get_stock_base_info(ticker)
 
 
@@ -152,6 +165,7 @@ async def krx_market_index(index: str = "KOSPI") -> dict:
     Returns:
         지수 현재가 및 등락 정보
     """
+    logger.info(f"[TOOL] krx_market_index | index={index}")
     return await get_market_index(index)
 
 
@@ -174,6 +188,7 @@ async def news_search_naver(
     Returns:
         뉴스 목록 (제목, 요약, 링크, 게시일)
     """
+    logger.info(f"[TOOL] news_search_naver | query={query!r} display={display}")
     return await search_naver_news(query, display=display, sort=sort)
 
 
@@ -190,7 +205,194 @@ async def news_search_web(query: str, num_results: int = 5) -> list:
     Returns:
         검색 결과 (제목, 요약, 링크, 출처)
     """
+    logger.info(f"[TOOL] news_search_web | query={query!r} num_results={num_results}")
     return await search_web(query, num_results=num_results)
+
+
+# ─── DB 데이터 도구 ───────────────────────────────────────────────────────────
+
+@mcp.tool()
+async def db_investor_flow(days: int = 5) -> list:
+    """
+    투자자별 순매수 집계 (외국인/기관/개인) - DB 조회.
+
+    Args:
+        days: 조회 일수 (기본 5일)
+
+    Returns:
+        날짜별 외국인/기관/개인 순매수 금액 (억원)
+    """
+    logger.info(f"[TOOL] db_investor_flow | days={days}")
+    return await fetch_investor_flow(days)
+
+
+@mcp.tool()
+async def db_investor_trading() -> dict:
+    """
+    종목별 수급 상세 (최근 거래일) - DB 조회.
+    외국인/기관 순매수 TOP5, 순매도 TOP5 제공.
+
+    Returns:
+        trade_date, foreign_net_buy_top5, foreign_net_sell_top5,
+        institution_net_buy_top5, institution_net_sell_top5
+    """
+    logger.info("[TOOL] db_investor_trading")
+    return await fetch_investor_trading()
+
+
+@mcp.tool()
+async def db_semiconductor_prices() -> list:
+    """
+    DRAM/NAND 반도체 현물가 - DB 조회.
+    최신 가격 및 전일 대비 등락률 포함.
+
+    Returns:
+        제품별 가격(USD), 전일비 등락률
+    """
+    logger.info("[TOOL] db_semiconductor_prices")
+    return await fetch_semiconductor_prices()
+
+
+@mcp.tool()
+async def db_market_indices() -> dict:
+    """
+    주요 시장 지수 - DB 조회.
+    KOSPI, KOSDAQ, S&P500, NASDAQ, DOW, VIX 포함.
+
+    Returns:
+        지수별 종가, 전일 종가, 등락률
+    """
+    logger.info("[TOOL] db_market_indices")
+    return await fetch_market_indices()
+
+
+# ─── 실시간 데이터 도구 (한투 API / Upbit / yfinance) ─────────────────────────
+
+@mcp.tool()
+async def realtime_stock_price(code: str) -> dict:
+    """
+    종목 실시간 현재가 조회 (한투 API).
+
+    Args:
+        code: 6자리 종목코드 (005930=삼성전자, 000660=SK하이닉스)
+
+    Returns:
+        현재가, 등락, 등락률, 거래량, 거래대금
+    """
+    logger.info(f"[TOOL] realtime_stock_price | code={code}")
+    return await get_realtime_stock_price(code)
+
+
+@mcp.tool()
+async def realtime_index(index_name: str = "KOSPI") -> dict:
+    """
+    KOSPI/KOSDAQ/KOSPI200 실시간 지수 (한투 API).
+
+    Args:
+        index_name: KOSPI, KOSDAQ, KOSPI200
+
+    Returns:
+        지수값, 변동, 등락률
+    """
+    logger.info(f"[TOOL] realtime_index | index={index_name}")
+    return await get_realtime_index(index_name)
+
+
+@mcp.tool()
+async def realtime_investor(code: str = "0001") -> dict:
+    """
+    투자자별 매매동향 실시간 (한투 API). 장중 외국인/기관/개인 순매수 현황.
+
+    Args:
+        code: 종목코드 (0001=KOSPI 전체)
+
+    Returns:
+        외국인/기관/개인 순매수 수량
+    """
+    logger.info(f"[TOOL] realtime_investor | code={code}")
+    return await get_realtime_investor(code)
+
+
+@mcp.tool()
+async def realtime_program_trade() -> dict:
+    """
+    프로그램 매매 동향 실시간 (한투 API). 프로그램 매수/매도 현황.
+
+    Returns:
+        프로그램 매수량, 매도량
+    """
+    logger.info("[TOOL] realtime_program_trade")
+    return await get_realtime_program_trade()
+
+
+@mcp.tool()
+async def realtime_fx_rate() -> dict:
+    """
+    원/달러 환율 조회 (한투 API).
+
+    Returns:
+        USD/KRW 환율
+    """
+    logger.info("[TOOL] realtime_fx_rate")
+    return await get_realtime_fx()
+
+
+@mcp.tool()
+async def night_futures_ewy() -> dict:
+    """
+    야간선물 데이터 (EWY 한국 ETF, 미국 시장).
+    전일 미국장 종가 + 애프터마켓/프리마켓. 한국 장 시작 전 갭 예측에 활용.
+
+    Returns:
+        EWY 종가, 등락률, 애프터마켓/프리마켓 데이터
+    """
+    logger.info("[TOOL] night_futures_ewy")
+    return await get_night_futures()
+
+
+@mcp.tool()
+async def crypto_price(symbol: str = "BTC") -> dict:
+    """
+    크립토 실시간 시세 (Upbit API).
+
+    Args:
+        symbol: BTC, ETH 등
+
+    Returns:
+        원화 가격, 24시간 등락률
+    """
+    logger.info(f"[TOOL] crypto_price | symbol={symbol}")
+    return await get_crypto_price(symbol)
+
+
+@mcp.tool()
+async def global_index(symbol: str) -> dict:
+    """
+    글로벌 지수 조회 (yfinance). 닛케이, S&P500, 나스닥, 다우, 항셍, DAX 등.
+
+    Args:
+        symbol: 지수명 (NIKKEI, 닛케이, SP500, NASDAQ, DOW, HSI, DAX)
+
+    Returns:
+        지수값, 등락률
+    """
+    logger.info(f"[TOOL] global_index | symbol={symbol}")
+    return await get_global_index(symbol)
+
+
+@mcp.tool()
+async def sector_performance(sector_name: str) -> dict:
+    """
+    업종별 등락률 조회 (KRX 데이터). 섹터명으로 검색.
+
+    Args:
+        sector_name: 업종명 (반도체, 자동차, 통신장비 등)
+
+    Returns:
+        섹터명, 등락률
+    """
+    logger.info(f"[TOOL] sector_performance | sector={sector_name}")
+    return await get_sector_performance(sector_name)
 
 
 if __name__ == "__main__":

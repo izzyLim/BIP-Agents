@@ -19,6 +19,7 @@ from state import ReportState
 
 logger = logging.getLogger(__name__)
 
+OPUS   = "claude-opus-4-6"
 SONNET = "claude-sonnet-4-6"
 HAIKU  = "claude-haiku-4-5-20251001"
 
@@ -92,32 +93,36 @@ async def global_agent_node(state: ReportState) -> dict:
 
 # ── 한국 시장 에이전트 ─────────────────────────────────────────────────────────
 KOREA_PROMPT = """당신은 한국 주식시장 분석 전문가입니다.
-KOSPI/KOSDAQ 데이터와 수급 데이터를 분석하여 다음을 작성하세요:
+아래 순서대로 도구를 호출하여 데이터를 수집한 뒤 분석하세요.
 
-1. **한국 시장 요약** - 주요 지수 동향 및 특징
-2. **외국인/기관 수급** - 순매수/순매도 포인트
-3. **주목 섹터/종목** - 강세/약세 섹터 2~3개
-4. **오늘의 전망** - 한국 시장 전망 및 전략
+분석 순서:
+1. `db_market_indices` 호출 — KOSPI/KOSDAQ 등락 확인
+2. `db_investor_flow` 호출 — 외국인/기관/개인 순매수 집계 확인
+3. `db_investor_trading` 호출 — 종목별 수급 상세 확인
+4. `news_search_naver`로 시장 배경 뉴스 검색
+   - db_market_indices/db_investor_trading 결과를 보고 당일 주요 이슈에 맞는 키워드로 검색
+   - 수급 상위 종목명으로 추가 검색
+5. 뉴스에서 특이 이슈 포착 시 추가 조사
+   - 특정 종목 이슈 → `dart_corp_search` + `dart_disclosure_list`로 공시 확인
+
+수집한 정보를 종합해 다음 항목 작성:
+- **한국 시장 요약** - 지수 동향과 원인
+- **외국인/기관 수급** - 수급 흐름과 배경 (db_investor_trading 수치 사용)
+- **주목 섹터/종목** - 뉴스에서 확인된 강세/약세 배경
+- **오늘의 전망** - 한국 시장 전망 및 전략
 
 신호등: 🟢(긍정) / 🟡(중립) / 🔴(부정) 으로 시작하세요.
-필요하면 MCP 도구로 추가 데이터(공시, 종목 정보)를 직접 조회하세요.
+⚠️ 수치 규칙: 종목별 순매수/순매도 금액은 반드시 db_investor_trading 조회 값만 사용하세요.
 """
 
 async def korea_agent_node(state: ReportState, mcp_tools: list = None) -> dict:
     """한국 시장 분석 에이전트 (MCP 도구 포함)"""
     tools = mcp_tools or []
-    llm = _llm(SONNET)
+    llm = _llm(SONNET, max_tokens=16000)
     market_data = state["market_data"]
 
-    korea_data = {
-        "kospi": market_data.get("indices", {}).get("kospi", {}),
-        "kosdaq": market_data.get("indices", {}).get("kosdaq", {}),
-        "investor_flow": market_data.get("investor_flow", {}),
-        "sectors": market_data.get("sectors", []),
-        "news": state.get("news_data", "")[:2000],
-    }
-
-    prompt = f"{KOREA_PROMPT}\n\n=== 시장 데이터 ===\n{json.dumps(korea_data, ensure_ascii=False, indent=2)}"
+    report_date = state.get("report_date", "")
+    prompt = f"{KOREA_PROMPT}\n\n분석 기준일: {report_date}"
 
     total_input = total_output = 0
 
@@ -151,31 +156,34 @@ async def korea_agent_node(state: ReportState, mcp_tools: list = None) -> dict:
 
 # ── 반도체 에이전트 ────────────────────────────────────────────────────────────
 SEMI_PROMPT = """당신은 반도체/테크 섹터 분석 전문가입니다.
-반도체 가격 데이터와 관련 뉴스를 분석하여 다음을 작성하세요:
+아래 순서대로 도구를 호출하여 데이터를 수집한 뒤 분석하세요.
 
-1. **반도체 가격 동향** - DRAM/NAND 현물가 변화
-2. **주요 반도체 종목** - 삼성전자/SK하이닉스/TSMC 등 동향
-3. **AI/HBM 수요 동향** - 글로벌 AI 투자와 수요 전망
-4. **리스크 요인** - 재고, 경쟁, 지정학 등
+분석 순서:
+1. `db_semiconductor_prices` 호출 — DRAM/NAND 현물가 확인
+2. `news_search_naver`로 최신 반도체 업계 동향 검색
+   - db_semiconductor_prices 결과를 보고 주요 이슈에 맞는 키워드로 검색
+   - 가격 변동이 큰 제품군, 주요 종목 이슈 등 당일 맥락에 맞게 검색어 생성
+3. 뉴스에서 특이 이슈 포착 시 추가 조사
+   - 주요 종목 이슈 → `dart_corp_search` + `dart_disclosure_list`로 공시 확인
+   - 재무/실적 맥락 필요 시 → `dart_financial_statement` 활용
+
+수집한 정보를 종합해 다음 항목 작성:
+- **반도체 가격 동향** - DRAM/NAND 현물가 변화와 원인
+- **주요 반도체 종목** - 삼성전자/SK하이닉스/TSMC 등 최신 이슈
+- **AI/HBM 수요 동향** - 글로벌 AI 투자와 수요 전망
+- **리스크 요인** - 재고, 경쟁, 지정학 등
 
 신호등: 🟢(긍정) / 🟡(중립) / 🔴(부정) 으로 시작하세요.
-최신 뉴스에서 관련 정보를 적극 활용하세요.
 """
 
 async def semi_agent_node(state: ReportState, mcp_tools: list = None) -> dict:
     """반도체 섹터 분석 에이전트"""
     tools = mcp_tools or []
-    llm = _llm(SONNET)
+    llm = _llm(SONNET, max_tokens=16000)
     market_data = state["market_data"]
 
-    semi_data = {
-        "semiconductor_prices": market_data.get("semiconductor_prices", {}),
-        "macro": {k: v for k, v in market_data.get("macro", {}).items()
-                  if "semi" in k.lower() or "memory" in k.lower()},
-        "news": state.get("news_data", "")[:1500],
-    }
-
-    prompt = f"{SEMI_PROMPT}\n\n=== 데이터 ===\n{json.dumps(semi_data, ensure_ascii=False, indent=2)}"
+    report_date = state.get("report_date", "")
+    prompt = f"{SEMI_PROMPT}\n\n분석 기준일: {report_date}"
 
     total_input = total_output = 0
 
@@ -241,40 +249,116 @@ async def flow_agent_node(state: ReportState) -> dict:
 
 # ── 집계 에이전트 ──────────────────────────────────────────────────────────────
 AGGREGATOR_PROMPT = """당신은 Morning Pulse 리포트 편집장입니다.
-각 에이전트의 분석 결과를 통합하여 일관성 있는 모닝 브리핑을 작성하세요.
+각 에이전트의 분석 결과를 통합하여 투자자를 위한 모닝 브리핑을 작성하세요.
+총 2500자 이상, 충분히 상세하게 작성하세요.
 
-출력 형식 (마크다운):
+⚠️ 규칙:
+- 중복 제거, 상충하는 분석은 더 구체적인 데이터 기준으로 통합
+- 수치는 에이전트가 제공한 데이터만 사용, 추정값 금지
 
-### 📌 오늘의 핵심
-[3줄 이내 핵심 요약]
+**신호등 규칙**: 아래 5개 섹션 제목 끝에 반드시 신호등을 붙이세요.
+- `[🟢]` 긍정/강세/호재: 수치가 개선되고 뉴스/정세도 우호적
+- `[🟡]` 중립/혼조/불확실: 수치와 맥락이 엇갈리거나 방향이 불분명
+- `[🔴]` 부정/약세/악재: 수치 악화 OR 주요 리스크 현재화
 
-### 🌐 글로벌 시장 전망
-[글로벌 분석 정리]
+아래는 실제 수치 데이터 기반으로 사전 계산된 참고 신호입니다.
+최종 신호는 뉴스, 지정학적 맥락, 시장 흐름을 종합해 당신이 직접 판단하세요.
+수치 참고값과 다르게 판단했다면 그 이유를 보고서 본문에 반영하세요.
 
-### 🇰🇷 한국 시장 전망
-[한국 분석 정리]
+{reference_signals}
 
-### ✅ 오늘의 체크리스트
-- [ ] 체크 항목 1
-- [ ] 체크 항목 2
-- [ ] 체크 항목 3
+신호등이 붙는 섹션 (이 5개만):
+- `## 🌍 글로벌 정세 & 매크로 환경 [🟡]` ← 이런 형식
+- `## 🇰🇷 [과거] 어제 한국 시장 마감 결과 [🔴]`
+- `## 🇺🇸 [최신] 오늘 새벽 미국 시장 마감 결과 [🔴]`
+- `## 📈 [전망] 오늘 한국 시장 예상 [🟡]`
+- `## 🔬 반도체 섹터 심층 분석 [🟢]`
 
-### ⚡ 대응 시나리오
-**상승 시나리오**: ...
-**하락 시나리오**: ...
+출력 형식 (이 순서 그대로):
 
-### 💾 반도체/테크
-[반도체 분석 정리]
+## 📌 오늘의 핵심
+오늘 아침 투자자가 알아야 할 어제 시장 핵심을 불렛 포인트로 간결하게 작성하세요.
+- 불렛 4~6개, 항목당 1줄 이내
+- 수치와 팩트 중심, 전망·해석 없이 사실만
+- 예시: `• KOSPI -0.8% 하락, 외국인 -3,200억 순매도`
 
-### 💰 수급 동향
-[수급 분석 정리]
+---
 
-중복 제거, 상충하는 분석은 더 구체적인 데이터 기준으로 통합하세요.
+## 🌍 글로벌 정세 & 매크로 환경
+- 글로벌 지정학/경제 이슈와 시장 영향
+- 달러, 금리, 원자재, 비트코인 동향
+- 한국 시장에 미치는 영향
+
+---
+
+## 🔥 특별 이벤트/사건 심층 분석
+
+**※ 에이전트 분석 및 뉴스에서 아래 이벤트가 언급된 경우에만 이 섹션을 작성하세요. 없으면 섹션 자체를 생략하세요.**
+- 테크 컨퍼런스: NVIDIA GTC, 애플 WWDC, CES, MS Build 등
+- 중앙은행: FOMC, BOJ, ECB 회의, 금리 결정
+- 지정학: 전쟁, 무역 갈등, 제재, 정상회담
+- 기업 이벤트: 대형 실적 발표, M&A, IPO, 파산
+- 경제지표: 고용, GDP, 물가지표 발표
+
+있다면 다음 구성으로 작성: 🎯 이벤트 개요 → 📜 배경 및 맥락 → 💰 시장 영향 → 🔮 향후 시나리오 → 📌 투자자 대응
+세부 항목은 ### 으로 구분하세요.
+
+---
+
+## 🇰🇷 [과거] 어제 한국 시장 마감 결과
+- 코스피/코스닥 등락 원인 심층 분석 (미국 시장 언급 금지)
+- 외국인/기관/개인 수급 분석 — 집중 매수/매도 종목과 의미
+- 강세/약세 섹터와 배경
+
+---
+
+## 🇺🇸 [최신] 오늘 새벽 미국 시장 마감 결과
+- 주요 지수 등락과 원인
+- 섹터별 차별화 움직임, 주요 종목 이슈
+- 글로벌 투자 심리 변화 (리스크온/오프)
+
+---
+
+## 📈 [전망] 오늘 한국 시장 예상
+- 새벽 미국장이 한국장에 미칠 영향
+- 코스피/코스닥 예상 방향, 주목 섹터/종목
+- 갭 예상 및 장 초반 대응 전략
+
+---
+
+## 🔬 반도체 섹터 심층 분석
+- DRAM/NAND 현물가 현황과 추이
+- HBM/AI 수요 동향
+- 삼성전자/SK하이닉스 동향 및 투자 시사점
+
+---
+
+## 💡 투자 아이디어 & 전략
+- 기회 섹터/종목과 이유
+- 리스크 요인과 대응
+
+---
+
+## 📅 이번 주 주요 이벤트
+| 날짜 | 이벤트 | 영향 예상 |
+|------|--------|-----------|
+| (날짜) | (이벤트명) | (영향) |
+
+---
+
+## ✅ 오늘의 체크리스트
+□ (장 시작 전 확인할 것 — 구체적으로)
+□ (장 중 모니터링할 것)
+□ (주의해야 할 가격 레벨이나 이벤트)
+
+---
+
+참고: 위 분석은 투자 권유가 아닌 정보 제공 목적입니다.
 """
 
 async def aggregator_node(state: ReportState) -> dict:
     """분석 결과 통합 에이전트"""
-    llm = _llm(SONNET, max_tokens=6000)
+    llm = _llm(OPUS, max_tokens=32000)
 
     sections = {
         "글로벌 분석": state.get("global_analysis", ""),
@@ -288,7 +372,11 @@ async def aggregator_node(state: ReportState) -> dict:
     feedback_section = f"\n\n=== 품질 검증 피드백 (반드시 반영) ===\n{feedback}" if feedback else ""
 
     analyses = "\n\n".join([f"=== {k} ===\n{v}" for k, v in sections.items() if v])
-    prompt = f"{AGGREGATOR_PROMPT}\n\n{analyses}{feedback_section}"
+
+    # 수치 기반 참고 신호 주입
+    ref_signals = state.get("reference_signals", "") or "(참고 신호 없음)"
+    prompt = AGGREGATOR_PROMPT.replace("{reference_signals}", ref_signals)
+    prompt = f"{prompt}\n\n{analyses}{feedback_section}"
 
     try:
         response = await llm.ainvoke(prompt)
@@ -304,78 +392,38 @@ async def aggregator_node(state: ReportState) -> dict:
 
 
 # ── 품질 검증 에이전트 ─────────────────────────────────────────────────────────
-QUALITY_PROMPT = """당신은 Morning Pulse 리포트 품질 검증자입니다.
-아래 리포트와 원본 시장 데이터를 비교하여 품질을 평가하세요.
-
-검증 항목 (각 항목은 독립적으로 평가):
-1. **형식 준수** — 필수 섹션 5개가 모두 있는가
-   (📌오늘의핵심 / 🌐글로벌 / 🇰🇷한국 / ✅체크리스트 / ⚡시나리오)
-2. **수치 일관성** — 리포트 본문의 수치가 원본 시장 데이터와 크게 다르지 않은가
-   (MCP로 추가 조회한 최신 정보는 원본 데이터에 없어도 PASS)
-3. **체크리스트 품질** — 항목이 3개 이상이고 구체적인가 (막연한 "모니터링" 금지)
-4. **시나리오 완성도** — 상승/하락 시나리오 모두 있고 구체적 조건이 명시되었는가
-5. **신호등 존재** — 각 섹션에 🟢/🟡/🔴 중 하나 이상 있는가
-
-판정 기준:
-- 5개 항목 중 4개 이상 통과 → PASS
-- 3개 이하 통과 → FAIL (구체적 수정 사항 명시)
-
-⚠️ 응답 규칙 (반드시 준수):
-- 첫 번째 단어는 반드시 PASS 또는 FAIL 중 하나만 출력
-- 그 외 다른 텍스트, 마크다운 헤더, 설명을 첫 줄에 쓰지 말 것
-- 형식: PASS\n피드백: 없음  또는  FAIL\n피드백: [수정 사항]
-"""
 
 async def quality_checker_node(state: ReportState) -> dict:
-    """품질 검증 에이전트"""
-    llm = _llm(HAIKU, max_tokens=1024)
+    """품질 검증 — 규칙 기반 (LLM 호출 없음)"""
     report = state.get("aggregated_report", "")
 
     if not report or report.startswith("[ERROR]"):
         return {"quality_passed": False, "quality_feedback": "리포트 생성 실패"}
 
-    # 강제 통과 조건: 최대 재시도 초과
-    if state.get("retry_count", 0) >= 2:
-        logger.warning("최대 재시도 도달 — 강제 통과")
-        return {"quality_passed": True, "quality_feedback": "최대 재시도 도달 — 강제 통과"}
-
-    # market_data 핵심 수치만 요약해서 전달 (토큰 절약)
-    market_data = state.get("market_data", {})
-    data_summary = {
-        "indices":   {k: v.get("value") for k, v in market_data.get("indices", {}).items()},
-        "usd_krw":   market_data.get("exchange_rates", {}).get("usd_krw", {}).get("value"),
-        "vix":       market_data.get("macro", {}).get("vix", {}).get("value"),
-        "investor_flow": {k: v.get("net") for k, v in market_data.get("investor_flow", {}).items()},
+    # 필수 섹션 5개 존재 여부 확인 (이모지 키워드로 체크)
+    required = {
+        "오늘의 핵심": "📌",
+        "글로벌":      "🌍",
+        "한국 시장":   "🇰🇷",
+        "미국 시장":   "🇺🇸",
+        "체크리스트":  "✅",
     }
+    missing = [name for name, emoji in required.items() if emoji not in report]
 
-    prompt = (
-        f"{QUALITY_PROMPT}\n\n"
-        f"=== 원본 시장 데이터 (핵심 수치) ===\n{json.dumps(data_summary, ensure_ascii=False, indent=2)}\n\n"
-        f"=== 리포트 ===\n{report}"
-    )
+    # 체크리스트 항목 수 확인 (□ 기호 3개 이상)
+    checklist_count = report.count("□")
 
-    try:
-        response = await llm.ainvoke(prompt)
-        tokens = _extract_tokens(response)
-        _log_tokens("quality", tokens)
+    passed = len(missing) == 0 and checklist_count >= 3
+    if missing:
+        feedback = f"누락 섹션: {', '.join(missing)}"
+    elif checklist_count < 3:
+        feedback = f"체크리스트 항목 부족 ({checklist_count}개)"
+    else:
+        feedback = "없음"
 
-        content = response.content
-        # "PASS" 판정: 첫 줄 또는 "판정:" 뒤에 PASS가 있으면 통과
-        first_lines = content[:300].upper()
-        passed = (
-            first_lines.strip().startswith("PASS")
-            or "판정: PASS" in content
-            or "판정:PASS" in content
-            or "\nPASS" in first_lines
-        )
-        feedback = content.split("피드백:")[-1].strip() if "피드백:" in content else content
-
-        existing = state.get("token_usage", {})
-        return {
-            "quality_passed": passed,
-            "quality_feedback": feedback,
-            "retry_count": state.get("retry_count", 0) + (0 if passed else 1),
-            "token_usage": {**existing, "quality": tokens},
-        }
-    except Exception as e:
-        return {"quality_passed": True, "quality_feedback": f"검증 오류 (통과 처리): {e}"}
+    logger.info(f"품질 검증 {'통과' if passed else '실패'}: {feedback}")
+    return {
+        "quality_passed": passed,
+        "quality_feedback": feedback,
+        "retry_count": state.get("retry_count", 0) + (0 if passed else 1),
+    }

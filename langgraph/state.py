@@ -12,6 +12,7 @@ class ReportState(TypedDict):
     # ── 입력 데이터 ──────────────────────────────────────────────
     market_data: Dict[str, Any]           # DB 적재 데이터 (지수, 수급, 반도체, 매크로)
     news_data: str                         # 네이버 뉴스 RAG 결과 (기존 파이프라인)
+    reference_signals: Optional[str]       # 수치 기반 참고 신호 (VIX, KOSPI 등 사전 계산)
 
     # ── 에이전트별 분석 결과 ──────────────────────────────────────
     global_analysis: Optional[str]         # 글로벌 시장 에이전트 (Sonnet)

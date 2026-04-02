@@ -18,7 +18,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-async def run_morning_pulse(market_data: dict, news_data: str, report_date: str = None) -> dict:
+async def run_morning_pulse(market_data: dict, news_data: str, report_date: str = None, reference_signals: str = None) -> dict:
     """
     Morning Pulse 리포트 생성
 
@@ -43,6 +43,7 @@ async def run_morning_pulse(market_data: dict, news_data: str, report_date: str 
     initial_state = {
         "market_data": market_data,
         "news_data": news_data,
+        "reference_signals": reference_signals or "",
         "global_analysis": None,
         "korea_analysis": None,
         "semi_analysis": None,
