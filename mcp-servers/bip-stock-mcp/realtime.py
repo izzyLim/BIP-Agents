@@ -125,6 +125,85 @@ async def get_realtime_stock_price(code: str) -> dict:
         return {"code": code, "error": str(e)}
 
 
+async def get_preopen_price(code: str) -> dict:
+    """
+    장 시작 전 예상 체결가 조회 (한투 API)
+    - 08:30~09:00 동시호가 시간에만 의미 있는 값
+    - antc_cntg_prc: 예상 체결가
+    - antc_vol: 예상 체결량
+    - stck_sdpr: 기준가 (전일 종가)
+    """
+    try:
+        data = await _kis_request(
+            "/uapi/domestic-stock/v1/quotations/inquire-price",
+            "FHKST01010100",
+            {"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": code},
+        )
+        output = data.get("output", {})
+
+        antc_prc = int(output.get("antc_cntg_prc", 0) or 0)
+        base_prc = int(output.get("stck_sdpr", 0) or 0)  # 전일 종가
+        change = antc_prc - base_prc if (antc_prc and base_prc) else 0
+        change_pct = round((change / base_prc * 100), 2) if base_prc > 0 else 0
+
+        return {
+            "code": code,
+            "name": output.get("hts_kor_isnm", code),
+            "expected_price": antc_prc,
+            "prev_close": base_prc,
+            "expected_change": change,
+            "expected_change_pct": change_pct,
+            "has_expected": antc_prc > 0,  # 08:30~09:00 외에는 false
+        }
+    except Exception as e:
+        logger.error(f"예상 체결가 조회 실패 ({code}): {e}")
+        return {"code": code, "error": str(e)}
+
+
+async def get_preopen_index(index_name: str) -> dict:
+    """
+    지수 예상가 조회 (한투 API)
+    - 08:30~09:00 동시호가에서 결정되는 예상 시가
+    """
+    index_map = {
+        "KOSPI": "0001",
+        "KOSDAQ": "1001",
+        "KOSPI200": "2001",
+    }
+    code = index_map.get(index_name.upper())
+    if not code:
+        return {"error": f"지원하지 않는 지수: {index_name}"}
+
+    try:
+        data = await _kis_request(
+            "/uapi/domestic-stock/v1/quotations/inquire-index-price",
+            "FHPUP02100000",
+            {"FID_COND_MRKT_DIV_CODE": "U", "FID_INPUT_ISCD": code},
+        )
+        output = data.get("output", {})
+
+        # 지수 예상가 필드 (bstp_nmix_oprc = 시가, bstp_nmix_prpr = 현재가)
+        expected = float(output.get("bstp_nmix_oprc", 0) or 0)
+        prev_close = float(output.get("bstp_nmix_prdy_clpr", 0) or 0)
+        if not prev_close:
+            prev_close = float(output.get("bstp_nmix_prpr", 0) or 0) - float(output.get("bstp_nmix_prdy_vrss", 0) or 0)
+
+        change = expected - prev_close if (expected and prev_close) else 0
+        change_pct = round((change / prev_close * 100), 2) if prev_close > 0 else 0
+
+        return {
+            "index": index_name.upper(),
+            "expected_value": expected,
+            "prev_close": prev_close,
+            "expected_change": round(change, 2),
+            "expected_change_pct": change_pct,
+            "has_expected": expected > 0,
+        }
+    except Exception as e:
+        logger.error(f"지수 예상가 조회 실패 ({index_name}): {e}")
+        return {"index": index_name, "error": str(e)}
+
+
 async def get_realtime_index(index_name: str) -> dict:
     """주요 지수 현재가 (한투 API)"""
     index_map = {
@@ -155,7 +234,49 @@ async def get_realtime_index(index_name: str) -> dict:
 
 
 async def get_realtime_investor(code: str = "0001") -> dict:
-    """투자자별 매매동향 (한투 API) — 장중 실시간"""
+    """
+    투자자별 매매동향 — 장중 실시간
+    - code="0001": KOSPI 시장 전체 (네이버 금융)
+    - 개별 종목: 한투 API
+    """
+    # 시장 전체는 네이버 금융 사용 (한투 API는 종목별만 지원)
+    if code in ("0001", "1001"):
+        try:
+            from bs4 import BeautifulSoup
+            from datetime import datetime
+
+            today_str = datetime.now().strftime("%Y%m%d")
+            headers = {"User-Agent": "Mozilla/5.0 AppleWebKit/537.36"}
+            async with httpx.AsyncClient(timeout=10) as client:
+                resp = await client.get(
+                    f"https://finance.naver.com/sise/investorDealTrendDay.naver?bizdate={today_str}",
+                    headers=headers,
+                )
+            soup = BeautifulSoup(resp.text, "html.parser")
+            table = soup.select_one("table.type_1")
+            if not table:
+                return {"error": "네이버 테이블 없음"}
+
+            for row in table.select("tr"):
+                cells = row.select("td")
+                if len(cells) < 4:
+                    continue
+                individual = int(cells[1].get_text(strip=True).replace(",", ""))
+                foreign = int(cells[2].get_text(strip=True).replace(",", ""))
+                institution = int(cells[3].get_text(strip=True).replace(",", ""))
+                return {
+                    "market": "KOSPI" if code == "0001" else "KOSDAQ",
+                    "foreign": foreign,
+                    "institution": institution,
+                    "individual": individual,
+                    "unit": "억원",
+                }
+            return {"error": "데이터 없음"}
+        except Exception as e:
+            logger.error(f"시장 투자자 매매동향 조회 실패: {e}")
+            return {"error": str(e)}
+
+    # 종목별은 한투 API
     try:
         data = await _kis_request(
             "/uapi/domestic-stock/v1/quotations/inquire-investor",
@@ -217,7 +338,9 @@ async def get_realtime_fx() -> dict:
 
         result = {"pair": "USD/KRW", "value": round(krw, 2)}
 
-        # DB에서 전일 환율 조회 → 변동률 계산
+        # DB에서 전일 USD/KRW 환율 조회 → 변동률 계산
+        # exchange_rate 타입에 여러 통화(KRW/JPY/CNY 등)가 섞여 있어서
+        # 1000 이상인 값만 KRW로 간주 (다른 통화는 비율값이라 1000 미만)
         try:
             from db import get_pool
             pool = await get_pool()
@@ -225,7 +348,9 @@ async def get_realtime_fx() -> dict:
                 row = await conn.fetchrow("""
                     SELECT value FROM macro_indicators
                     WHERE indicator_type = 'exchange_rate'
+                      AND region = 'South Korea'
                       AND indicator_date < CURRENT_DATE
+                      AND value > 1000
                     ORDER BY indicator_date DESC LIMIT 1
                 """)
                 if row and row["value"]:

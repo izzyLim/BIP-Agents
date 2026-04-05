@@ -17,8 +17,9 @@ from realtime import (
     get_realtime_stock_price, get_realtime_index, get_realtime_investor,
     get_realtime_program_trade, get_realtime_fx,
     get_night_futures, get_crypto_price, get_sector_performance,
-    get_global_index,
+    get_global_index, get_preopen_price, get_preopen_index,
 )
+from context import get_indicator_context as _get_indicator_context
 
 load_dotenv()
 
@@ -393,6 +394,76 @@ async def sector_performance(sector_name: str) -> dict:
     """
     logger.info(f"[TOOL] sector_performance | sector={sector_name}")
     return await get_sector_performance(sector_name)
+
+
+@mcp.tool()
+async def preopen_stock_price(code: str) -> dict:
+    """
+    장 시작 전 예상 체결가 조회 (한투 API, 08:30~09:00에만 유효).
+    동시호가 시간 중 현재 집계된 예상 체결가와 예상 등락률을 반환.
+
+    Args:
+        code: 6자리 종목코드
+
+    Returns:
+        expected_price, prev_close, expected_change_pct, has_expected
+    """
+    logger.info(f"[TOOL] preopen_stock_price | code={code}")
+    return await get_preopen_price(code)
+
+
+@mcp.tool()
+async def preopen_index(index_name: str = "KOSPI") -> dict:
+    """
+    장 시작 전 지수 예상가 (한투 API, 08:30~09:00에만 유효).
+
+    Args:
+        index_name: KOSPI, KOSDAQ, KOSPI200
+
+    Returns:
+        expected_value, prev_close, expected_change_pct, has_expected
+    """
+    logger.info(f"[TOOL] preopen_index | index={index_name}")
+    return await get_preopen_index(index_name)
+
+
+@mcp.tool()
+async def get_indicator_context(
+    indicator_type: str,
+    region: Optional[str] = None,
+    current_value: Optional[float] = None,
+    lookback_days: int = 90,
+) -> dict:
+    """
+    지표의 시장 맥락 조회. 체크리스트에서 '레벨/지지/저항/돌파/환율' 관련 항목 판단 시
+    반드시 먼저 호출하여 절대 수준을 확인해야 합니다.
+
+    macro_indicators 테이블의 과거 lookback_days 히스토리 기반:
+    - 90일 분포 (min/max/avg/median/percentile/zscore)
+    - 현재값의 상대 위치 (range_position, drawdown_from_high)
+    - 추세 (trend_label, avg_5d/20d)
+    - 변동성 (volatility_20d_pct)
+    - Family별 해석 문자열 (interpretation)
+
+    Args:
+        indicator_type: exchange_rate, stock_index_kospi, stock_index_kosdaq,
+                        commodity_oil, commodity_gold, crypto_btc, vix 등
+        region: exchange_rate의 경우 필수 (South Korea=원/달러, Japan=엔/달러 등).
+                지수/크립토는 선택.
+        current_value: 실시간 도구 결과를 넘기면 DB latest와 시점 mismatch 방지
+        lookback_days: 기본 90일
+
+    Returns:
+        family, percentile, zscore, range_position, drawdown_from_high,
+        trend_label, volatility_20d_pct, interpretation 등
+    """
+    logger.info(f"[TOOL] get_indicator_context | type={indicator_type} region={region} current={current_value}")
+    return await _get_indicator_context(
+        indicator_type=indicator_type,
+        region=region,
+        current_value=current_value,
+        lookback_days=lookback_days,
+    )
 
 
 if __name__ == "__main__":

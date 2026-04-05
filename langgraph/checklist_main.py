@@ -45,6 +45,11 @@ async def run_checklist_monitor(
     initial_state = {
         "checklist_text": checklist_text,
         "time_phase": time_phase,
+        "parsed_items": [],
+        "gathered_data": {},
+        "always_stocks": {},
+        "market_context": {},
+        "signals": {},
         "analysis_result": None,
         "token_usage": {},
         "analysis_date": analysis_date,
